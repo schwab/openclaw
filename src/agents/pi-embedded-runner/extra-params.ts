@@ -112,7 +112,9 @@ function createStreamFnWithExtraParams(
       ...options,
       onPayload: (payload) => {
         // Log the actual payload params being sent to the API
-        log.debug(`API payload model field: ${JSON.stringify(payload?.model)}`);
+        log.debug(
+          `API payload model field: ${JSON.stringify((payload as Record<string, unknown>)?.model)}`,
+        );
         options?.onPayload?.(payload);
       },
     });
