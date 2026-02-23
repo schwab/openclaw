@@ -713,18 +713,6 @@ export async function runTui(opts: TuiOptions) {
     abortActive,
   } = sessionActions;
 
-  const { handleChatEvent, handleAgentEvent } = createEventHandlers({
-    chatLog,
-    tui,
-    state,
-    setActivityStatus,
-    refreshSessionInfo,
-    loadHistory,
-    isLocalRunId,
-    forgetLocalRunId,
-    clearLocalRunIds,
-  });
-
   const { handleCommand, sendMessage, openModelSelector, openAgentSelector, openSessionSelector } =
     createCommandHandlers({
       client,
@@ -746,6 +734,28 @@ export async function runTui(opts: TuiOptions) {
       noteLocalRunId,
       forgetLocalRunId,
     });
+
+  // Create a wrapper to send tool results back to the agent
+  const sendToolResultMessage = async (resultText: string) => {
+    try {
+      await sendMessage(`Tool execution result:\n${resultText}`);
+    } catch (err) {
+      console.error("Failed to send tool result message:", err);
+    }
+  };
+
+  const { handleChatEvent, handleAgentEvent } = createEventHandlers({
+    chatLog,
+    tui,
+    state,
+    setActivityStatus,
+    refreshSessionInfo,
+    loadHistory,
+    isLocalRunId,
+    forgetLocalRunId,
+    clearLocalRunIds,
+    sendToolResultMessage,
+  });
 
   const { runLocalShellLine } = createLocalShellRunner({
     chatLog,

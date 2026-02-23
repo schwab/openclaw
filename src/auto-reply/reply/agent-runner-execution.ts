@@ -282,6 +282,24 @@ export async function runAgentTurnWithFallback(params: {
             runId,
             authProfile,
           });
+
+          // Diagnostic logging for message history
+          try {
+            const logData = {
+              timestamp: new Date().toISOString(),
+              sessionId: embeddedContext.sessionId,
+              sessionKey: embeddedContext.sessionKey,
+              provider,
+              model,
+            };
+            fs.appendFileSync(
+              `${process.env.HOME || "/tmp"}/.openclaw/tui-message-trace.log`,
+              JSON.stringify(logData) + "\n",
+            );
+          } catch {
+            // Ignore logging errors
+          }
+
           return runEmbeddedPiAgent({
             ...embeddedContext,
             groupId: resolveGroupSessionKey(params.sessionCtx)?.id,

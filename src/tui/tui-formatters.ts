@@ -336,3 +336,42 @@ export function asString(value: unknown, fallback = ""): string {
   }
   return fallback;
 }
+
+/**
+ * Extract tool calls from markdown format text (e.g., ```tool_call {...}```)
+ * Some models like gemma3-tools return tool calls as text instead of structured objects
+ */
+export function extractToolCallsFromText(text: string): Array<{
+  name: string;
+  parameters: Record<string, unknown>;
+}> {
+  const toolCalls: Array<{ name: string; parameters: Record<string, unknown> }> = [];
+
+  // Match tool_call code blocks
+  const toolCallRegex = /```tool_call\s*\n?\s*({[\s\S]*?})\s*\n?```/g;
+  let match;
+
+  while ((match = toolCallRegex.exec(text)) !== null) {
+    try {
+      const jsonStr = match[1];
+      const parsed = JSON.parse(jsonStr);
+      if (parsed.name && typeof parsed.name === "string") {
+        toolCalls.push({
+          name: parsed.name,
+          parameters: parsed.parameters || {},
+        });
+      }
+    } catch {
+      // Skip malformed JSON
+    }
+  }
+
+  return toolCalls;
+}
+
+/**
+ * Remove tool call markdown blocks from text, keeping only the content
+ */
+export function removeToolCallMarkdown(text: string): string {
+  return text.replace(/```tool_call\s*\n?\s*{[\s\S]*?}\s*\n?```/g, "").trim();
+}

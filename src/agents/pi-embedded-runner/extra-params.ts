@@ -102,11 +102,21 @@ function createStreamFnWithExtraParams(
   log.debug(`creating streamFn wrapper with params: ${JSON.stringify(streamParams)}`);
 
   const underlying = baseStreamFn ?? streamSimple;
-  const wrappedStreamFn: StreamFn = (model, context, options) =>
-    underlying(model, context, {
+  const wrappedStreamFn: StreamFn = (model, context, options) => {
+    // Debug: Log the model being sent to pi-ai
+    log.debug(
+      `streamFn called with model.id=${model.id}, provider=${model.provider}, api=${model.api}`,
+    );
+    return underlying(model, context, {
       ...streamParams,
       ...options,
+      onPayload: (payload) => {
+        // Log the actual payload params being sent to the API
+        log.debug(`API payload model field: ${JSON.stringify(payload?.model)}`);
+        options?.onPayload?.(payload);
+      },
     });
+  };
 
   return wrappedStreamFn;
 }

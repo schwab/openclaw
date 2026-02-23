@@ -1,3 +1,4 @@
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
@@ -225,6 +226,17 @@ function summarizeSessionContext(messages: AgentMessage[]): {
 export async function runEmbeddedAttempt(
   params: EmbeddedRunAttemptParams,
 ): Promise<EmbeddedRunAttemptResult> {
+  // CRITICAL: Log that this function is being called
+  try {
+    const logPath = `${process.env.HOME || "/tmp"}/.openclaw/attempt-execution.log`;
+    fsSync.appendFileSync(
+      logPath,
+      `ATTEMPT STARTED: ${new Date().toISOString()} sessionId=${params.sessionId}\n`,
+    );
+  } catch {
+    // ignore
+  }
+
   const resolvedWorkspace = resolveUserPath(params.workspaceDir);
   const prevCwd = process.cwd();
   const runAbortController = new AbortController();
@@ -623,6 +635,19 @@ export async function runEmbeddedAttempt(
           ),
         ),
       });
+      // Log session messages count for debugging message history issues
+      try {
+        const logPath = process.env.HOME
+          ? `${process.env.HOME}/.openclaw/context-debug.log`
+          : "/tmp/openclaw-context-debug.log";
+        fsSync.appendFileSync(
+          logPath,
+          `Session created: sessionId=${activeSession.sessionId} messages.length=${activeSession.messages?.length ?? 0}\n`,
+        );
+      } catch {
+        // ignore
+      }
+
       const cacheTrace = createCacheTrace({
         cfg: params.config,
         env: process.env,
@@ -657,8 +682,47 @@ export async function runEmbeddedAttempt(
         const ollamaBaseUrl = modelBaseUrl || providerBaseUrl || OLLAMA_NATIVE_BASE_URL;
         activeSession.agent.streamFn = createOllamaStreamFn(ollamaBaseUrl);
       } else {
-        // Force a stable streamFn reference so vitest can reliably mock @mariozechner/pi-ai.
-        activeSession.agent.streamFn = streamSimple;
+        // For ollama provider using openai-completions API, ensure model ID includes namespace
+        const wrappedStreamSimple: typeof streamSimple = (model, context, options) => {
+          // Ollama requires full model reference (e.g., "orieg/gemma3-tools:12b")
+          // If model.id already has "/" (e.g., "orieg/gemma3-tools:12b"), it's already correct
+          // If it doesn't (e.g., "gemma3-tools:12b"), we need to reconstruct it
+          let normalizedModel = model;
+          if (model.provider === "ollama" && model.id && !model.id.includes("/")) {
+            // Model ID doesn't include namespace, need to find it from config
+            const providerConfig = params.config?.models?.providers?.[model.provider];
+            const configuredModels = providerConfig?.models ?? [];
+            const matchedConfig = configuredModels.find(
+              (m) => m.id === model.id || m.id.endsWith(`/${model.id}`),
+            );
+            if (matchedConfig && matchedConfig.id.includes("/")) {
+              normalizedModel = {
+                ...model,
+                id: matchedConfig.id,
+              };
+              log.debug(
+                `[streamSimple] Normalized ollama model ID: "${model.id}" → "${normalizedModel.id}"`,
+              );
+            }
+          }
+
+          const result = streamSimple(normalizedModel, context, options);
+          return result;
+        };
+        activeSession.agent.streamFn = wrappedStreamSimple;
+      }
+
+      // Write initial setup log
+      try {
+        const logPath = process.env.HOME
+          ? `${process.env.HOME}/.openclaw/context-debug.log`
+          : "/tmp/openclaw-context-debug.log";
+        fsSync.appendFileSync(
+          logPath,
+          `Setup: model_api=${params.model.api} provider=${params.provider} modelId=${params.modelId}\n`,
+        );
+      } catch {
+        // ignore
       }
 
       applyExtraParamsToAgent(
@@ -701,6 +765,43 @@ export async function runEmbeddedAttempt(
         };
       }
 
+      // Diagnostic logging for all model APIs to debug message inclusion
+      const logFile = process.env.HOME
+        ? `${process.env.HOME}/.openclaw/context-debug.log`
+        : "/tmp/openclaw-context-debug.log";
+      const inner = activeSession.agent.streamFn;
+      activeSession.agent.streamFn = (model, context, options) => {
+        const ctx = context as unknown as { messages?: unknown };
+        const messages = ctx?.messages;
+        const timestamp = new Date().toISOString();
+        const lines = [
+          `[${timestamp}] model=${model.id} api=${model.api} messages=${Array.isArray(messages) ? messages.length : "N/A"}`,
+        ];
+        if (Array.isArray(messages)) {
+          messages.forEach((msg, idx) => {
+            const role = (msg as unknown as { role?: string }).role;
+            const content = (msg as unknown as { content?: unknown }).content;
+            const contentPreview = (() => {
+              if (typeof content === "string") {
+                return content.substring(0, 80).replace(/\n/g, "\\n");
+              }
+              if (Array.isArray(content)) {
+                return JSON.stringify(content).substring(0, 80);
+              }
+              return String(content).substring(0, 80);
+            })();
+            lines.push(`  [${idx}] role=${role} content="${contentPreview}"`);
+          });
+        }
+        const output = lines.join("\n") + "\n";
+        try {
+          fsSync.appendFileSync(logFile, output);
+        } catch {
+          /* ignore write errors */
+        }
+        return inner(model, context, options);
+      };
+
       if (anthropicPayloadLogger) {
         activeSession.agent.streamFn = anthropicPayloadLogger.wrapStreamFn(
           activeSession.agent.streamFn,
@@ -725,10 +826,27 @@ export async function runEmbeddedAttempt(
         const validated = transcriptPolicy.validateAnthropicTurns
           ? validateAnthropicTurns(validatedGemini)
           : validatedGemini;
-        const truncated = limitHistoryTurns(
-          validated,
-          getDmHistoryLimitFromSessionKey(params.sessionKey, params.config),
-        );
+        const historyLimit = getDmHistoryLimitFromSessionKey(params.sessionKey, params.config);
+        const truncated = limitHistoryTurns(validated, historyLimit);
+
+        // Diagnostic logging for message limiting
+        try {
+          const logPath = process.env.HOME
+            ? `${process.env.HOME}/.openclaw/message-limit-trace.log`
+            : "/tmp/message-limit-trace.log";
+          const logData = {
+            timestamp: new Date().toISOString(),
+            sessionId: params.sessionId,
+            sessionKey: params.sessionKey,
+            historyLimit,
+            beforeLimit: validated.length,
+            afterLimit: truncated.length,
+          };
+          fsSync.appendFileSync(logPath, JSON.stringify(logData) + "\n");
+        } catch {
+          // ignore logging errors
+        }
+
         // Re-run tool_use/tool_result pairing repair after truncation, since
         // limitHistoryTurns can orphan tool_result blocks by removing the
         // assistant message that contained the matching tool_use.

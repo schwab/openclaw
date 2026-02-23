@@ -1,4 +1,9 @@
-import { asString, extractTextFromMessage, isCommandMessage } from "./tui-formatters.js";
+import {
+  asString,
+  extractTextFromMessage,
+  isCommandMessage,
+  extractToolCallsFromText,
+} from "./tui-formatters.js";
 import { TuiStreamAssembler } from "./tui-stream-assembler.js";
 import type { AgentEvent, ChatEvent, TuiStateAccess } from "./tui-types.js";
 
@@ -29,6 +34,7 @@ type EventHandlerContext = {
   isLocalRunId?: (runId: string) => boolean;
   forgetLocalRunId?: (runId: string) => void;
   clearLocalRunIds?: () => void;
+  sendToolResultMessage?: (resultText: string) => Promise<void>;
 };
 
 export function createEventHandlers(context: EventHandlerContext) {
@@ -42,6 +48,7 @@ export function createEventHandlers(context: EventHandlerContext) {
     isLocalRunId,
     forgetLocalRunId,
     clearLocalRunIds,
+    sendToolResultMessage,
   } = context;
   const finalizedRuns = new Map<string, number>();
   const sessionRuns = new Map<string, number>();
@@ -194,6 +201,55 @@ export function createEventHandlers(context: EventHandlerContext) {
       } else {
         chatLog.finalizeAssistant(finalText, evt.runId);
       }
+
+      // Extract and execute tool calls from markdown format (e.g., gemma3-tools)
+      const extractedToolCalls = extractToolCallsFromText(finalText);
+      for (const toolCall of extractedToolCalls) {
+        const toolCallId = `${evt.runId}-${toolCall.name}-${Date.now()}`;
+        chatLog.startTool(toolCallId, toolCall.name, toolCall.parameters);
+
+        // Execute tool (currently only supports "exec")
+        if (toolCall.name === "exec" && typeof toolCall.parameters?.command === "string") {
+          // Import child_process dynamically to execute command
+          void (async () => {
+            try {
+              const { exec } = await import("node:child_process");
+              const { promisify } = await import("node:util");
+              const execAsync = promisify(exec);
+              const { stdout, stderr } = await execAsync(toolCall.parameters.command as string, {
+                timeout: 30000,
+              });
+              const result = stdout || "(no output)";
+              chatLog.updateToolResult(toolCallId, {
+                content: result,
+                stderr: stderr || undefined,
+              });
+
+              // Send result back to agent so it can process and continue
+              if (sendToolResultMessage) {
+                await sendToolResultMessage(
+                  `Tool result from exec:\n${result}${stderr ? `\nStderr: ${stderr}` : ""}`,
+                );
+              }
+            } catch (error) {
+              const errorMsg = error instanceof Error ? error.message : String(error);
+              chatLog.updateToolResult(
+                toolCallId,
+                {
+                  content: `Error executing command: ${errorMsg}`,
+                },
+                { isError: true },
+              );
+
+              // Send error back to agent
+              if (sendToolResultMessage) {
+                await sendToolResultMessage(`Tool error from exec: ${errorMsg}`);
+              }
+            }
+          })();
+        }
+      }
+
       noteFinalizedRun(evt.runId);
       clearActiveRunIfMatch(evt.runId);
       if (wasActiveRun) {

@@ -567,6 +567,8 @@ function broadcastChatError(params: {
 
 export const chatHandlers: GatewayRequestHandlers = {
   "chat.history": async ({ params, respond, context }) => {
+    process.stderr.write(`[DEBUG-GATEWAY] chat.history called\n`);
+
     if (!validateChatHistoryParams(params)) {
       respond(
         false,
@@ -706,6 +708,9 @@ export const chatHandlers: GatewayRequestHandlers = {
     });
   },
   "chat.send": async ({ params, respond, context, client }) => {
+    // DEBUG: Verify chat.send is being called
+    process.stderr.write(`[DEBUG-GATEWAY] chat.send called\n`);
+
     if (!validateChatSendParams(params)) {
       respond(
         false,
@@ -769,6 +774,12 @@ export const chatHandlers: GatewayRequestHandlers = {
     }
     const rawSessionKey = p.sessionKey;
     const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
+    // Log model resolution for debugging
+    const sessionAgentId = resolveSessionAgentId({ sessionKey, config: cfg });
+    const resolvedModel = resolveSessionModelRef(cfg, entry, sessionAgentId);
+    console.error(
+      `[GATEWAY-DEBUG] chat.send: sessionKey=${sessionKey}, sessionModel="${entry?.model}", resolvedModel="${resolvedModel.model}", provider="${resolvedModel.provider}"`,
+    );
     const timeoutMs = resolveAgentTimeoutMs({
       cfg,
       overrideMs: p.timeoutMs,

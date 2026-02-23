@@ -225,6 +225,55 @@ export async function runEmbeddedPiAgent(
 
       let provider = (params.provider ?? DEFAULT_PROVIDER).trim() || DEFAULT_PROVIDER;
       let modelId = (params.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
+
+      // Always try to parse combined model references like "ollama/orieg/gemma3-tools:12b"
+      // These have been known to slip through without proper splitting
+      if (modelId.includes("/")) {
+        const slashIndex = modelId.indexOf("/");
+        const potentialProvider = modelId.substring(0, slashIndex);
+
+        // Known providers that should be extracted from combined references
+        const knownProviders = new Set([
+          "ollama",
+          "openai",
+          "anthropic",
+          "anthropic-bedrock",
+          "custom-vicunaapi-ngrok-io",
+          "google",
+          "google-ai-studio",
+          "groq",
+          "replicate",
+          "cohere",
+          "mistral",
+          "together",
+          "aleph-alpha",
+          "baseten",
+          "baseten-aws",
+          "baseten-gcp",
+          "openrouter",
+          "vercel-ai",
+          "vertex-ai",
+          "hugging-face",
+          "perplexity",
+          "fireworks",
+          "modal",
+          "runwayml",
+        ]);
+
+        // Also add any providers from config
+        if (params.config?.models?.providers) {
+          Object.keys(params.config.models.providers).forEach((p) => knownProviders.add(p));
+        }
+
+        // If first segment is a known provider, extract it
+        if (knownProviders.has(potentialProvider) && !potentialProvider.includes("/")) {
+          provider = potentialProvider;
+          modelId = modelId.substring(slashIndex + 1);
+          log.debug(
+            `[model-parsing] Extracted provider from combined reference: provider="${provider}", modelId="${modelId}"`,
+          );
+        }
+      }
       const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
       const fallbackConfigured =
         (params.config?.agents?.defaults?.model?.fallbacks?.length ?? 0) > 0;
@@ -1026,10 +1075,13 @@ export async function runEmbeddedPiAgent(
           // the final call, giving an accurate snapshot of current context.
           const lastCallUsage = normalizeUsage(lastAssistant?.usage as UsageLike);
           const promptTokens = derivePromptTokens(lastRunPromptUsage);
+          const resolvedProvider = lastAssistant?.provider ?? provider;
+          const resolvedModelId = lastAssistant?.model ?? model.id;
+          const fullModelRef = `${resolvedProvider}/${resolvedModelId}`;
           const agentMeta: EmbeddedPiAgentMeta = {
             sessionId: sessionIdUsed,
-            provider: lastAssistant?.provider ?? provider,
-            model: lastAssistant?.model ?? model.id,
+            provider: resolvedProvider,
+            model: fullModelRef,
             usage,
             lastCallUsage: lastCallUsage ?? undefined,
             promptTokens,
